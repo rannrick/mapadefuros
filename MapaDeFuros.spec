@@ -7,8 +7,8 @@ a = Analysis(
     pathex=['src'],
     binaries=[],
     datas=[('references', 'references'), ('assets', 'assets')],
-    hiddenimports=['scipy.spatial', 'scipy.spatial._qhull', 'PIL._tkinter_finder'],
-    excludes=['PyQt5', 'PyQt6', 'PySide2', 'PySide6', 'IPython', 'pandas',
+    hiddenimports=['PIL._tkinter_finder'],
+    excludes=['scipy', 'PyQt5', 'PyQt6', 'PySide2', 'PySide6', 'IPython', 'pandas',
               'matplotlib.backends.backend_qtagg', 'matplotlib.backends.backend_gtk3agg'],
     noarchive=False,
 )
