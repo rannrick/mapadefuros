@@ -534,6 +534,13 @@ def pressao_estimada(pavimentos, por_pavimento=12.0):
     return float(pavimentos) * float(por_pavimento)
 
 
+def nome_base_seguro(nome):
+    """Sanitiza um nome (ex.: nome do poligono) para uso como base de nome de arquivo."""
+    nome = re.sub(r'[\\/:*?"<>|]+', '_', (nome or '').strip())
+    nome = nome.strip(' .')
+    return nome or 'sondagens'
+
+
 # ----------------------------------------------------------------------------
 # 7. SAIDAS
 # ----------------------------------------------------------------------------
@@ -675,6 +682,8 @@ def main(argv=None, imprimir=True):
                     help='separador entre prefixo e numero (padrao " - ")')
     ap.add_argument('--digitos', type=int, default=2,
                     help='digitos do numero sequencial (padrao 2 -> 01, 02, ...)')
+    ap.add_argument('--nome-base', default='sondagens',
+                    help='nome base dos arquivos gerados (padrao "sondagens")')
     ap.add_argument('--saida', default='./saida_sondagens')
     args = ap.parse_args(argv)
 
@@ -754,7 +763,7 @@ def main(argv=None, imprimir=True):
     poly_en = [latlon_para_utm(p[1], p[0], zona_ref)[:2] for p in outer_ll]
     holes_en = [[latlon_para_utm(p[1], p[0], zona_ref)[:2] for p in h] for h in holes_ll]
 
-    base = os.path.join(args.saida, 'sondagens')
+    base = os.path.join(args.saida, nome_base_seguro(args.nome_base))
     escrever_kml(base + '.kml', outer_ll, holes_ll, C_ll, rotulos, descr)
     escrever_dxf(base + '.dxf', poly_en, holes_en, pontos_en, rotulos)
     escrever_csv(base + '.csv', linhas)

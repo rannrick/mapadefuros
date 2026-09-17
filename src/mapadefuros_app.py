@@ -12,6 +12,7 @@ import traceback
 import subprocess
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from tkinter import font as tkfont
 
 import mapadefuros_core as core
 
@@ -62,6 +63,51 @@ def abrir_no_sistema(caminho):
             subprocess.Popen(["xdg-open", caminho])
     except Exception as e:
         messagebox.showerror(APP_NOME, f"Não foi possível abrir:\n{caminho}\n\n{e}")
+
+
+def imagem_vidro(largura, altura, topo, base, borda, raio=10, brilho=120):
+    """Botao com aparencia de vidro: gradiente vertical, reflexo que desvanece no
+    topo e cantos arredondados. O Tk nao tem transparencia real, entao o efeito
+    e desenhado com o Pillow."""
+    from PIL import Image, ImageChops, ImageDraw, ImageTk
+
+    def coluna(valores):
+        """Gradiente vertical de 1 px, esticado depois para a largura toda."""
+        col = Image.new("RGBA", (1, altura))
+        for y, cor in enumerate(valores):
+            col.putpixel((0, y), cor)
+        return col.resize((largura, altura))
+
+    mascara = Image.new("L", (largura, altura), 0)
+    ImageDraw.Draw(mascara).rounded_rectangle(
+        [0, 0, largura - 1, altura - 1], radius=raio, fill=255)
+
+    fundo = coluna([tuple(int(topo[i] + (base[i] - topo[i]) * (y / max(altura - 1, 1)))
+                          for i in range(4)) for y in range(altura)])
+    img = Image.new("RGBA", (largura, altura), (0, 0, 0, 0))
+    img.paste(fundo, (0, 0), mascara)
+
+    # reflexo: mais forte no topo, some antes da metade
+    corte = max(int(altura * 0.55), 1)
+    luz = coluna([(255, 255, 255,
+                   int(brilho * (1 - y / corte) ** 1.6) if y < corte else 0)
+                  for y in range(altura)])
+    luz.putalpha(ImageChops.multiply(luz.split()[3], mascara))
+    img = Image.alpha_composite(img, luz)
+
+    contorno = Image.new("RGBA", (largura, altura), (0, 0, 0, 0))
+    ImageDraw.Draw(contorno).rounded_rectangle(
+        [0, 0, largura - 1, altura - 1], radius=raio, outline=borda, width=1)
+    img = Image.alpha_composite(img, contorno)
+    return ImageTk.PhotoImage(img)
+
+
+def fonte_disponivel(familias, preferidas, padrao="Helvetica"):
+    """Primeira fonte instalada da lista de preferencia."""
+    for nome in preferidas:
+        if nome in familias:
+            return nome
+    return padrao
 
 
 def pasta_padrao():
@@ -216,18 +262,132 @@ class App(tk.Tk):
         self.v_prefixo = tk.StringVar(value="SPT")
         self.v_sep = tk.StringVar(value=" - ")
         self.v_dig = tk.StringVar(value="2")
+        self.v_nome_saida = tk.StringVar(value="sondagens")
         self.v_saida = tk.StringVar(value=pasta_padrao())
         self.v_status = tk.StringVar(value="Selecione um arquivo KML, KMZ ou CSV.")
+        self._nome_saida_manual = False
+        self._nome_saida_auto_atual = self.v_nome_saida.get()
+        self.v_nome_saida.trace_add("write", self._on_nome_saida_editado)
 
     # ------------------------------------------------------------- layout
     def _layout(self):
+        BRANCO = "#ffffff"
+        TEXTO = "#1b2430"        # quase preto, com leve tom de ardósia
+        SUAVE = "#5b6b7c"        # textos secundários
+        ACENTO = "#1f4e79"       # azul técnico (mesmo tom da planta gerada)
+        ACENTO_CLARO = "#2b6ca3"
+        BORDA = "#c6dcf0"
+        CAMPO = "#eaf2fb"        # azul claro dos campos preenchíveis
+        CAMPO_DESAB = "#f2f5f8"
+        CAMPO_FOCO = "#6ea8dc"
+
+        familias = set(tkfont.families(self))
+        base = fonte_disponivel(familias, ["Corbel", "Candara", "Calibri", "Segoe UI"])
+        serifa = fonte_disponivel(familias, ["Constantia", "Cambria", "Georgia"], base)
+        F_TEXTO = (base, 11)
+        F_MIUDO = (base, 10)
+        F_DESTAQUE = (base, 11, "bold")
+        F_SECAO = (base, 11, "bold")
+        F_ACAO = (base, 12, "bold")
+        F_CABECALHO = (serifa, 18, "bold")
+        self.F_MONO = ("Consolas", 10)
+        self.F_TEXTO = F_TEXTO
+
         estilo = ttk.Style(self)
         try:
-            estilo.theme_use("vista" if sys.platform.startswith("win") else "clam")
+            estilo.theme_use("clam")
         except tk.TclError:
             pass
-        estilo.configure("Titulo.TLabel", font=("Segoe UI", 10, "bold"))
-        estilo.configure("Grande.TButton", font=("Segoe UI", 10, "bold"))
+        self.configure(background=BRANCO)
+        self.option_add("*Font", F_TEXTO)
+        self.option_add("*TCombobox*Listbox.background", CAMPO)
+        self.option_add("*TCombobox*Listbox.foreground", TEXTO)
+        self.option_add("*TCombobox*Listbox.selectBackground", ACENTO_CLARO)
+        self.option_add("*TCombobox*Listbox.selectForeground", BRANCO)
+        self.option_add("*TCombobox*Listbox.font", F_TEXTO)
+
+        estilo.configure(".", background=BRANCO, foreground=TEXTO,
+                         font=F_TEXTO, borderwidth=0, focuscolor=BRANCO)
+        for w in ("TFrame", "TLabel", "TCheckbutton", "TRadiobutton",
+                  "TNotebook", "TPanedwindow", "TLabelframe"):
+            estilo.configure(w, background=BRANCO, foreground=TEXTO)
+
+        # títulos de seção em azul, semibold
+        estilo.configure("TLabelframe", bordercolor=BORDA, relief="solid", borderwidth=1)
+        estilo.configure("TLabelframe.Label", background=BRANCO, foreground=ACENTO, font=F_SECAO)
+
+        # campos: borda fina, plana, com realce azul no foco
+        for w in ("TEntry", "TCombobox", "TSpinbox"):
+            estilo.configure(w, fieldbackground=CAMPO, background=CAMPO, foreground=TEXTO,
+                             bordercolor=BORDA, lightcolor=BORDA, darkcolor=BORDA,
+                             borderwidth=1, relief="solid", padding=5,
+                             arrowcolor=ACENTO, insertcolor=TEXTO,
+                             selectbackground=ACENTO_CLARO, selectforeground=BRANCO)
+            estilo.map(w,
+                       bordercolor=[("focus", CAMPO_FOCO), ("hover", CAMPO_FOCO)],
+                       lightcolor=[("focus", CAMPO_FOCO)],
+                       darkcolor=[("focus", CAMPO_FOCO)],
+                       fieldbackground=[("readonly", CAMPO), ("disabled", CAMPO_DESAB)],
+                       background=[("readonly", CAMPO), ("disabled", CAMPO_DESAB)],
+                       foreground=[("readonly", TEXTO), ("disabled", "#9aa7b4")])
+
+        # botões com efeito de vidro (imagens 9-slice desenhadas com Pillow)
+        self._imgs_botao = []
+        self._estilo_vidro(estilo, "TButton", F_DESTAQUE, ACENTO, "#9aa7b4",
+                           padding=(10, 2), alt=32,
+                           normal=((255, 255, 255, 250), (223, 236, 249, 250), (176, 205, 231)),
+                           hover=((255, 255, 255, 255), (206, 227, 246, 255), (124, 173, 214)),
+                           press=((198, 220, 241, 255), (228, 240, 250, 255), (110, 160, 205)),
+                           inativo=((250, 252, 254, 255), (240, 244, 248, 255), (214, 223, 231)))
+        self._estilo_vidro(estilo, "Acao.TButton", F_ACAO, BRANCO, "#eef2f6",
+                           padding=(14, 8), alt=46,
+                           normal=((66, 129, 184, 255), (25, 72, 114, 255), (20, 58, 92)),
+                           hover=((86, 150, 203, 255), (31, 86, 133, 255), (24, 70, 110)),
+                           press=((22, 64, 102, 255), (48, 104, 152, 255), (16, 48, 78)),
+                           inativo=((176, 194, 210, 255), (146, 167, 186, 255), (140, 160, 178)))
+
+        estilo.configure("TCheckbutton", font=F_TEXTO)
+        estilo.configure("TRadiobutton", font=F_TEXTO)
+        estilo.map("TCheckbutton", background=[("active", BRANCO)])
+        estilo.map("TRadiobutton", background=[("active", BRANCO)])
+
+        # abas com sublinhado de acento na selecionada
+        estilo.configure("TNotebook", borderwidth=0, tabmargins=(0, 4, 0, 0))
+        estilo.configure("TNotebook.Tab", background=BRANCO, foreground=SUAVE,
+                         font=F_TEXTO, padding=(16, 8), borderwidth=0)
+        estilo.map("TNotebook.Tab",
+                   background=[("selected", BRANCO), ("active", "#f5f9fd")],
+                   foreground=[("selected", ACENTO), ("active", ACENTO_CLARO)],
+                   font=[("selected", F_DESTAQUE)])
+
+        estilo.configure("Treeview", background=BRANCO, fieldbackground=BRANCO,
+                         foreground=TEXTO, rowheight=26, borderwidth=0, font=F_TEXTO)
+        estilo.configure("Treeview.Heading", background="#f5f8fb", foreground=ACENTO,
+                         font=F_DESTAQUE, relief="flat", padding=(6, 8), borderwidth=0)
+        estilo.map("Treeview.Heading", background=[("active", "#eaf1f8")])
+        estilo.map("Treeview", background=[("selected", "#dce9f5")],
+                   foreground=[("selected", TEXTO)])
+
+        estilo.configure("TScrollbar", background="#f0f3f7", troughcolor=BRANCO,
+                         bordercolor=BRANCO, arrowcolor=SUAVE, borderwidth=0)
+        estilo.map("TScrollbar", background=[("active", "#dbe3ec")])
+        estilo.configure("TSeparator", background=BORDA)
+
+        estilo.configure("Titulo.TLabel", font=F_CABECALHO, foreground=ACENTO, background=BRANCO)
+        estilo.configure("Sub.TLabel", font=F_MIUDO, foreground=SUAVE, background=BRANCO)
+        estilo.configure("Aviso.TLabel", font=F_MIUDO, foreground="#a05000", background=BRANCO)
+        estilo.configure("Campo.TLabel", font=F_TEXTO, foreground=SUAVE, background=BRANCO)
+        estilo.configure("Status.TLabel", font=F_MIUDO, foreground=SUAVE, background="#f5f8fb",
+                         padding=(12, 7))
+
+        # cabeçalho
+        cab = ttk.Frame(self, padding=(16, 12, 16, 10))
+        cab.pack(fill="x")
+        ttk.Label(cab, text=APP_NOME, style="Titulo.TLabel").pack(anchor="w")
+        ttk.Label(cab, style="Sub.TLabel",
+                  text="Programação de sondagens SPT  ·  ABNT NBR 8036:1983"
+                       f"  ·  v{APP_VERSAO}").pack(anchor="w", pady=(2, 0))
+        ttk.Separator(self, orient="horizontal").pack(fill="x")
 
         menu = tk.Menu(self)
         m_arq = tk.Menu(menu, tearoff=0)
@@ -246,49 +406,53 @@ class App(tk.Tk):
         pan.pack(fill="both", expand=True)
 
         # --- painel esquerdo (entradas) com rolagem
-        esq_out = ttk.Frame(pan, width=390)
-        canvas = tk.Canvas(esq_out, highlightthickness=0, width=380)
+        esq_out = ttk.Frame(pan, width=520)
+        canvas = tk.Canvas(esq_out, highlightthickness=0, width=510, background=BRANCO)
         sb = ttk.Scrollbar(esq_out, orient="vertical", command=canvas.yview)
-        esq = ttk.Frame(canvas, padding=10)
+        esq = ttk.Frame(canvas, padding=(14, 8, 14, 12))
         esq.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=esq, anchor="nw")
+        janela_esq = canvas.create_window((0, 0), window=esq, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(janela_esq, width=e.width))
         canvas.configure(yscrollcommand=sb.set)
         canvas.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         canvas.bind_all("<MouseWheel>",
                         lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+        # sem isso, rolar a roda sobre um combobox troca o valor selecionado
+        self.unbind_class("TCombobox", "<MouseWheel>")
         pan.add(esq_out, weight=0)
 
         # 1. arquivo
-        g = ttk.LabelFrame(esq, text="1. Polígono", padding=8)
-        g.pack(fill="x", pady=4)
+        g = ttk.LabelFrame(esq, text="1. Polígono", padding=(12, 8, 12, 12))
+        g.pack(fill="x", pady=(0, 10))
         f = ttk.Frame(g); f.pack(fill="x")
         ttk.Entry(f, textvariable=self.v_arquivo).pack(side="left", fill="x", expand=True)
         ttk.Button(f, text="Procurar...", command=self.escolher_arquivo).pack(side="left", padx=(4, 0))
-        ttk.Label(g, text="Polígono do arquivo:").pack(anchor="w", pady=(6, 0))
+        ttk.Label(g, text="Polígono do arquivo:", style="Campo.TLabel").pack(anchor="w", pady=(8, 2))
         self.cb_poly = ttk.Combobox(g, textvariable=self.v_poligono, state="readonly",
                                     values=["Automático (maior área)"])
         self.cb_poly.pack(fill="x")
-        f = ttk.Frame(g); f.pack(fill="x", pady=(6, 0))
-        ttk.Label(f, text="Área declarada (m², opcional):").pack(side="left")
-        ttk.Entry(f, textvariable=self.v_area_decl, width=12).pack(side="right")
+        self.cb_poly.bind("<<ComboboxSelected>>", lambda e: self._prever_nome_saida())
+        f = ttk.Frame(g); f.pack(fill="x", pady=(8, 0))
+        ttk.Label(f, text="Área declarada (m², opcional):", style="Campo.TLabel").pack(side="left")
+        ttk.Entry(f, textvariable=self.v_area_decl, width=12, justify="right").pack(side="right")
 
         # 2. hipotese de area
-        g = ttk.LabelFrame(esq, text="2. O que o polígono representa?", padding=8)
-        g.pack(fill="x", pady=4)
+        g = ttk.LabelFrame(esq, text="2. O que o polígono representa?", padding=(12, 8, 12, 12))
+        g.pack(fill="x", pady=(0, 10))
         ttk.Radiobutton(g, text="Projeção do EDIFÍCIO (item 4.1.1.2)",
                         variable=self.v_tipo, value="edificio").pack(anchor="w")
         ttk.Radiobutton(g, text="Terreno sem implantação definida (item 4.1.1.3)",
                         variable=self.v_tipo, value="terreno").pack(anchor="w")
         ttk.Radiobutton(g, text="Não sei - calcular as DUAS hipóteses",
                         variable=self.v_tipo, value="ambas").pack(anchor="w")
-        ttk.Label(g, foreground="#a05000", wraplength=330, justify="left",
+        ttk.Label(g, style="Aviso.TLabel", wraplength=400, justify="left",
                   text="A regra de 1 furo/200 m² vale para a projeção do edifício, "
-                       "não para o lote inteiro.").pack(anchor="w", pady=(4, 0))
+                       "não para o lote inteiro.").pack(anchor="w", pady=(6, 0))
 
         # 3. carga / profundidade
-        g = ttk.LabelFrame(esq, text="3. Carga e profundidade", padding=8)
-        g.pack(fill="x", pady=4)
+        g = ttk.LabelFrame(esq, text="3. Carga e profundidade", padding=(12, 8, 12, 12))
+        g.pack(fill="x", pady=(0, 10))
         for txt, val in (("Nº de pavimentos", "pavimentos"),
                          ("Pressão média q (kPa)", "q"),
                          ("Sem carga (profundidade a definir)", "nenhuma")):
@@ -299,21 +463,21 @@ class App(tk.Tk):
         self.e_qpav = self._campo(grid, 1, "kPa por pavimento:", self.v_qpav)
         self.e_q = self._campo(grid, 2, "q (kPa):", self.v_q)
         self._campo(grid, 3, "γ solo (kN/m³):", self.v_gama)
-        ttk.Checkbutton(g, text="γ informado pelo projetista (não é estimativa)",
-                        variable=self.v_gama_inf).pack(anchor="w")
+        ttk.Checkbutton(g, text="γ informado pelo projetista (não estimado)",
+                        variable=self.v_gama_inf).pack(anchor="w", pady=(2, 0))
         grid = ttk.Frame(g); grid.pack(fill="x", pady=(4, 0))
         self._campo(grid, 0, "Prof. mínima (m):", self.v_profmin)
-        ttk.Label(grid, text="Fundação:").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Label(grid, text="Fundação:", style="Campo.TLabel").grid(row=1, column=0, sticky="w", pady=3)
         ttk.Combobox(grid, textvariable=self.v_fund, state="readonly", width=14,
                      values=["não definida", "rasa", "profunda"]).grid(row=1, column=1, sticky="e")
         grid.columnconfigure(1, weight=1)
 
         # 4. avancado
-        g = ttk.LabelFrame(esq, text="4. Locação (avançado)", padding=8)
-        g.pack(fill="x", pady=4)
+        g = ttk.LabelFrame(esq, text="4. Locação (avançado)", padding=(12, 8, 12, 12))
+        g.pack(fill="x", pady=(0, 10))
         grid = ttk.Frame(g); grid.pack(fill="x")
         self._campo(grid, 0, "Forçar nº de furos:", self.v_n)
-        ttk.Label(grid, text="Modo:").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Label(grid, text="Modo:", style="Campo.TLabel").grid(row=1, column=0, sticky="w", pady=3)
         ttk.Combobox(grid, textvariable=self.v_modo, state="readonly", width=14,
                      values=["auto", "cantos", "malha"]).grid(row=1, column=1, sticky="e")
         self._campo(grid, 2, "Recuo da divisa (m):", self.v_recuo)
@@ -323,21 +487,27 @@ class App(tk.Tk):
         grid.columnconfigure(1, weight=1)
 
         # 5. saida
-        g = ttk.LabelFrame(esq, text="5. Pasta de saída", padding=8)
-        g.pack(fill="x", pady=4)
-        f = ttk.Frame(g); f.pack(fill="x")
+        g = ttk.LabelFrame(esq, text="5. Saída", padding=(12, 8, 12, 12))
+        g.pack(fill="x", pady=(0, 10))
+        ttk.Label(g, text="Nome de saída:", style="Campo.TLabel").pack(anchor="w")
+        ttk.Entry(g, textvariable=self.v_nome_saida).pack(fill="x", pady=(2, 1))
+        ttk.Label(g, style="Sub.TLabel", wraplength=400, justify="left",
+                  text="Sugerido pelo nome do polígono — pode editar.").pack(anchor="w", pady=(0, 8))
+        ttk.Label(g, text="Pasta de saída:", style="Campo.TLabel").pack(anchor="w")
+        f = ttk.Frame(g); f.pack(fill="x", pady=(2, 0))
         ttk.Entry(f, textvariable=self.v_saida).pack(side="left", fill="x", expand=True)
-        ttk.Button(f, text="...", width=3, command=self.escolher_saida).pack(side="left", padx=(4, 0))
+        ttk.Button(f, text="...", width=3, command=self.escolher_saida).pack(side="left", padx=(6, 0))
 
-        self.bt_calc = ttk.Button(esq, text="▶  GERAR MAPA DE FUROS", style="Grande.TButton",
+        self.bt_calc = ttk.Button(esq, text="GERAR MAPA DE FUROS", style="Acao.TButton",
                                   command=self.calcular)
-        self.bt_calc.pack(fill="x", pady=(10, 4), ipady=6)
+        self.bt_calc.pack(fill="x", pady=(4, 8))
         ttk.Button(esq, text="Abrir pasta de saída", command=self.abrir_saida).pack(fill="x")
-        f = ttk.Frame(esq); f.pack(fill="x", pady=4)
+        f = ttk.Frame(esq); f.pack(fill="x", pady=6)
         ttk.Button(f, text="Abrir KML (Google Earth)",
                    command=lambda: self.abrir_gerado("kml")).pack(side="left", fill="x", expand=True)
         ttk.Button(f, text="Abrir DXF",
-                   command=lambda: self.abrir_gerado("dxf")).pack(side="left", fill="x", expand=True)
+                   command=lambda: self.abrir_gerado("dxf")).pack(side="left", fill="x",
+                                                                 expand=True, padx=(6, 0))
 
         # --- painel direito (resultados)
         dir_ = ttk.Frame(pan, padding=(4, 8, 8, 4))
@@ -346,7 +516,10 @@ class App(tk.Tk):
         self.nb.pack(fill="both", expand=True)
 
         self.tab_res = ttk.Frame(self.nb)
-        self.txt = tk.Text(self.tab_res, wrap="none", font=("Consolas", 10))
+        self.txt = tk.Text(self.tab_res, wrap="none", font=self.F_MONO, relief="flat",
+                          background=BRANCO, foreground=TEXTO, padx=14, pady=12,
+                          insertbackground=TEXTO, selectbackground="#dce9f5",
+                          selectforeground=TEXTO)
         ys = ttk.Scrollbar(self.tab_res, command=self.txt.yview)
         xs = ttk.Scrollbar(self.tab_res, orient="horizontal", command=self.txt.xview)
         self.txt.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
@@ -381,7 +554,9 @@ class App(tk.Tk):
         self.nb.add(self.tab_planta, text="Planta")
 
         self.tab_norma = ttk.Frame(self.nb)
-        tn = tk.Text(self.tab_norma, wrap="word", font=("Segoe UI", 10), padx=10, pady=10)
+        tn = tk.Text(self.tab_norma, wrap="word", font=self.F_TEXTO, padx=16, pady=14,
+                    relief="flat", background=BRANCO, foreground=TEXTO,
+                    selectbackground="#dce9f5", selectforeground=TEXTO, spacing1=2, spacing3=4)
         ys3 = ttk.Scrollbar(self.tab_norma, command=tn.yview)
         tn.configure(yscrollcommand=ys3.set)
         ys3.pack(side="right", fill="y")
@@ -395,8 +570,9 @@ class App(tk.Tk):
         tn.configure(state="disabled")
         self.nb.add(self.tab_norma, text="Norma")
 
-        ttk.Label(self, textvariable=self.v_status, relief="sunken",
-                  anchor="w", padding=(6, 2)).pack(fill="x", side="bottom")
+        ttk.Separator(self, orient="horizontal").pack(fill="x", side="bottom")
+        ttk.Label(self, textvariable=self.v_status, style="Status.TLabel",
+                  anchor="w").pack(fill="x", side="bottom")
 
         self.txt.insert("end", "Mapa de Furos - programação de sondagens SPT (NBR 8036:1983)\n\n"
                                "1) Abra o KML/KMZ (Google Earth) ou CSV de vértices.\n"
@@ -405,10 +581,34 @@ class App(tk.Tk):
                                "4) Clique em GERAR MAPA DE FUROS.\n\n"
                                "Saídas: KML, DXF (UTM), CSV, planta PNG, JSON e relatório TXT.\n")
 
+    def _estilo_vidro(self, estilo, nome, fonte, cor_texto, cor_inativa, padding, alt,
+                      normal, hover, press, inativo):
+        """Monta um estilo de botao a partir de imagens de vidro (9-slice)."""
+        imgs = {}
+        for estado, (topo, base, borda) in (("normal", normal), ("hover", hover),
+                                            ("press", press), ("inativo", inativo)):
+            imgs[estado] = imagem_vidro(240, alt, topo, base, borda)
+        self._imgs_botao.extend(imgs.values())
+
+        elemento = f"vidro{nome.replace('.', '')}.button"
+        estilo.element_create(
+            elemento, "image", imgs["normal"],
+            ("disabled", imgs["inativo"]),
+            ("pressed", imgs["press"]),
+            ("active", imgs["hover"]),
+            border=14, sticky="nsew")
+        estilo.layout(nome, [(elemento, {"sticky": "nsew", "children": [
+            ("Button.padding", {"sticky": "nsew", "children": [
+                ("Button.label", {"sticky": "nsew"})]})]})])
+        estilo.configure(nome, font=fonte, foreground=cor_texto,
+                         anchor="center", padding=padding)
+        estilo.map(nome, foreground=[("disabled", cor_inativa)])
+
     def _campo(self, pai, linha, rotulo, var):
-        ttk.Label(pai, text=rotulo).grid(row=linha, column=0, sticky="w", pady=2)
-        e = ttk.Entry(pai, textvariable=var, width=12)
-        e.grid(row=linha, column=1, sticky="e", pady=2)
+        ttk.Label(pai, text=rotulo, style="Campo.TLabel").grid(
+            row=linha, column=0, sticky="w", pady=3)
+        e = ttk.Entry(pai, textvariable=var, width=12, justify="right")
+        e.grid(row=linha, column=1, sticky="e", pady=3)
         pai.columnconfigure(1, weight=1)
         return e
 
@@ -444,6 +644,39 @@ class App(tk.Tk):
             self.v_status.set("CSV de vértices carregado.")
         self.cb_poly.configure(values=vals)
         self.v_poligono.set(vals[0])
+        self._prever_nome_saida()
+
+    def _on_nome_saida_editado(self, *_):
+        if self.v_nome_saida.get() != self._nome_saida_auto_atual:
+            self._nome_saida_manual = True
+
+    def _nome_poligono_selecionado(self):
+        sel = self.v_poligono.get()
+        if sel.startswith("["):
+            try:
+                idx = int(sel[1:sel.index("]")])
+                for i, n, _a in self.poligonos:
+                    if i == idx:
+                        return n
+            except (ValueError, IndexError):
+                pass
+            return None
+        if self.poligonos:
+            return max(self.poligonos, key=lambda t: t[2])[1]
+        arq = self.v_arquivo.get()
+        if arq.lower().endswith(".csv"):
+            return os.path.splitext(os.path.basename(arq))[0]
+        return None
+
+    def _prever_nome_saida(self):
+        if self._nome_saida_manual:
+            return
+        nome = self._nome_poligono_selecionado()
+        if not nome:
+            return
+        nome_saneado = core.nome_base_seguro(nome)
+        self._nome_saida_auto_atual = nome_saneado
+        self.v_nome_saida.set(nome_saneado)
 
     def escolher_saida(self):
         p = filedialog.askdirectory(title="Pasta de saída", initialdir=self.v_saida.get())
@@ -515,7 +748,8 @@ class App(tk.Tk):
         base += ["--recuo", rec]
         base += ["--prefixo", self.v_prefixo.get() or "SPT",
                  "--separador", self.v_sep.get(),
-                 "--digitos", str(num(self.v_dig.get(), "dígitos", inteiro=True) or 2)]
+                 "--digitos", str(num(self.v_dig.get(), "dígitos", inteiro=True) or 2),
+                 "--nome-base", self.v_nome_saida.get().strip() or "sondagens"]
         ad = num(self.v_area_decl.get(), "área declarada")
         if ad:
             ctx["area_declarada"] = ad
@@ -545,8 +779,9 @@ class App(tk.Tk):
                 for t, argv in execucoes:
                     res = core.main(argv, imprimir=False)
                     texto = montar_relatorio(res, ctx)
-                    rel = os.path.join(os.path.dirname(res["arquivos"]["kml"]),
-                                       "sondagens_relatorio.txt")
+                    kml_path = res["arquivos"]["kml"]
+                    stem = os.path.splitext(os.path.basename(kml_path))[0]
+                    rel = os.path.join(os.path.dirname(kml_path), f"{stem}_relatorio.txt")
                     with open(rel, "w", encoding="utf-8-sig") as fh:
                         fh.write(texto)
                     res["arquivos"]["relatorio"] = rel
